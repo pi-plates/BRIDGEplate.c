@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a C library for communicating with Pi-Plates BRIDGEplate and its stackable plate ecosystem via USB CDC serial interface. The library supports multiple plate types including ADC, BRIDGE, CURRENT, DAQC, DAQC2, DIGI, RELAY, RELAY2, and THERMO plates.
+This is a C library for communicating with Pi-Plates BRIDGEplate and its stackable plate ecosystem via USB CDC serial interface. The library supports multiple Pi-Plate types including the ADCplate, BRIDGEplate, CURRENTplate, DAQCplate, DAQC2plate, DIGIplate, RELAYplate, RELAY2plate, and THERMOplate.
 
 ## Features
 
