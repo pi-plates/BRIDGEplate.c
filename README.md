@@ -517,12 +517,6 @@ char* THERMO_getTYPE(int addr, int channel);
 |--------|------|-------------------|
 | `"K"` | Chromel-Alumel | -200°C to 1372°C |
 | `"J"` | Iron-Constantan | -210°C to 1200°C |
-| `"T"` | Copper-Constantan | -200°C to 400°C |
-| `"E"` | Chromel-Constantan | -200°C to 1000°C |
-| `"R"` | Platinum-Rhodium | 0°C to 1768°C |
-| `"S"` | Platinum-Rhodium | 0°C to 1768°C |
-| `"B"` | Platinum-Rhodium | 200°C to 1820°C |
-| `"N"` | Nicrosil-Nisil | -200°C to 1300°C |
 
 ### Temperature Reading
 ```c
