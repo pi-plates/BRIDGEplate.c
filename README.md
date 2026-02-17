@@ -719,27 +719,3 @@ int main() {
   # Log out and back in
   ```
 
-## Troubleshooting
-
-**Device not found on Linux:**
-```bash
-ls -l /dev/serial/by-id/ | grep BRIDGEplate
-```
-
-**Segmentation fault:**
-Ensure string-argument functions receive quoted string literals, not bare integers.
-See MIGRATION_GUIDE.md for details.
-
-**Compiler warnings:**
-All warnings have been eliminated in the current version. If you see any, ensure you are using the latest library files.
-
----
-
-## Additional Documentation
-
-| File | Contents |
-|------|----------|
-| `STRING_VALUES_REFERENCE.md` | Complete list of valid string values |
-| `STRING_ARGUMENT_CHANGES.md` | Detailed change log |
-| `MIGRATION_GUIDE.md` | How to update existing code |
-| `LINUX_TESTING_GUIDE.md` | Linux-specific testing instructions |
