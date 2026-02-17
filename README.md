@@ -549,7 +549,7 @@ double THERMO_getCOLD(int addr, char scale);               // Cold junction temp
 
 ## Example Programs
 
-### Example 1: Basic BRIDGE I/O
+### Example 1: Basic BRIDGE Functions
 ```c
 #include <stdio.h>
 #include "BRIDGEplate.h"
@@ -560,10 +560,6 @@ int main() {
     printf("Device: %s\n", BRIDGE_getID());
     printf("HW Rev: %.1f\n", BRIDGE_getHWrev());
     printf("FW Rev: %.1f\n", BRIDGE_getFWrev());
-    printf("Digital inputs: 0x%02X\n", BRIDGE_getDINall());
-
-    BRIDGE_setDOUTall(0xFF);   // All outputs on
-    BRIDGE_setDOUTall(0x00);   // All outputs off
 
     BRIDGEplate_close();
     return 0;
@@ -614,7 +610,7 @@ int main() {
 }
 ```
 
-### Example 4: Motor Control
+### Example 4: Motor Control with DAQC2plate
 ```c
 #include <stdio.h>
 #include "BRIDGEplate.h"
