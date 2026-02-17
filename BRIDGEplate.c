@@ -1183,7 +1183,7 @@ int BRIDGEplate_init(void) {
         return -1;
     }
     
-    printf("BRIDGEplate found on %s\n", port_name);
+    //printf("BRIDGEplate found on %s\n", port_name);
     
     // Open the serial port
     g_serial_port = open_serial_port(port_name, BAUD_RATE);
