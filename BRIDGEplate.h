@@ -55,26 +55,33 @@ int ADC_getSall(int addr, double* results, int max_results);
 int ADC_getDall(int addr, double* results, int max_results);
 int ADC_getIall(int addr, double* results, int max_results);
 
-void ADC_setMODE(int addr, const char* mode);
+void ADC_setMODE(int addr, int mode);
 int ADC_getMODE(int addr);
 
-void ADC_configINPUT(int addr, int channel, const char* config);
+void ADC_configINPUT(int addr, int channel, int sample_rate);
+void ADC_configINPUT_enable(int addr, int channel, int sample_rate, int enable);
 void ADC_enableINPUT(int addr, int channel);
 void ADC_disableINPUT(int addr, int channel);
 
 double ADC_readSINGLE(int addr, int channel);
 double ADC_readSINGLE_rate(int addr, int channel, int rate);
 void ADC_startSINGLE(int addr, int channel);
+void ADC_startSINGLE_rate(int addr, int channel, int rate);
 double ADC_getSINGLE(int addr);
 
 int ADC_readSCAN(int addr, double* results, int max_results);
+int ADC_readSCAN_rate(int addr, double* results, int max_results, int rate);
 void ADC_startSCAN(int addr);
+void ADC_startSCAN_rate(int addr, int rate);
 int ADC_getSCAN(int addr, double* results, int max_results);
 
 int ADC_getBLOCK(int addr, double* results, int max_results);
+int ADC_getBLOCK_rate(int addr, double* results, int max_results, int rate);
 void ADC_startBLOCK(int addr);
+void ADC_startBLOCK_rate(int addr, int rate);
 
 void ADC_startSTREAM(int addr);
+void ADC_startSTREAM_rate(int addr, int rate);
 int ADC_getSTREAM(int addr, double* results, int max_results);
 void ADC_stopSTREAM(int addr);
 
@@ -83,7 +90,7 @@ int ADC_getDINall(int addr);
 void ADC_enableDINevent(int addr, int bit);
 void ADC_disableDINevent(int addr, int bit);
 
-void ADC_configTRIG(int addr, const char* config);
+void ADC_configTRIG(int addr, int config);
 void ADC_startTRIG(int addr);
 void ADC_stopTRIG(int addr);
 void ADC_triggerFREQ(int addr, int freq);
@@ -102,16 +109,6 @@ double BRIDGE_getFWrev(void);
 
 void BRIDGE_resetSTACK(void);
 int BRIDGE_getSRQ(void);
-
-void BRIDGE_setMODE(const char* mode);
-
-int BRIDGE_getDIN(int bit);
-int BRIDGE_getDINall(void);
-
-void BRIDGE_setDOUT(int bit);
-void BRIDGE_clrDOUT(int bit);
-void BRIDGE_toggleDOUT(int bit);
-void BRIDGE_setDOUTall(int value);
 
 void BRIDGE_resetBRIDGE(void);
 void BRIDGE_help(void);
@@ -156,7 +153,8 @@ int DAQC_getDINall(int addr);
 void DAQC_enableDINint(int addr, int bit);
 void DAQC_disableDINint(int addr, int bit);
 
-double DAQC_getTEMP(int addr, char scale);
+double DAQC_getTEMP(int addr);
+double DAQC_getTEMP_scale(int addr, char scale);
 
 void DAQC_setDOUTbit(int addr, int bit);
 void DAQC_clrDOUTbit(int addr, int bit);
@@ -216,7 +214,7 @@ void DAQC2_setDAC(int addr, int channel, double value);
 double DAQC2_getDAC(int addr, int channel);
 
 // LED Functions
-void DAQC2_setLED(int addr, const char* led);
+void DAQC2_setLED(int addr, int led);
 int DAQC2_getLED(int addr);
 
 // Frequency Functions
@@ -231,7 +229,7 @@ int DAQC2_getPWM(int addr, int channel);
 void DAQC2_fgON(int addr);
 void DAQC2_fgOFF(int addr);
 void DAQC2_fgFREQ(int addr, double freq);
-void DAQC2_fgTYPE(int addr, const char* type);
+void DAQC2_fgTYPE(int addr, int type);
 void DAQC2_fgLEVEL(int addr, double level);
 
 // SRQ Functions
@@ -244,7 +242,7 @@ void DAQC2_motorDISABLE(int addr, int motor);
 void DAQC2_motorMOVE(int addr, int motor, int steps);
 void DAQC2_motorJOG(int addr, int motor);
 void DAQC2_motorSTOP(int addr, int motor);
-void DAQC2_motorDIR(int addr, int motor, const char* dir);
+void DAQC2_motorDIR(int addr, int motor, int dir);
 void DAQC2_motorRATE(int addr, int motor, int rate);
 void DAQC2_motorOFF(int addr, int motor);
 void DAQC2_motorINTenable(int addr, int motor);
@@ -327,9 +325,9 @@ void THERMO_setLED(int addr);
 void THERMO_clrLED(int addr);
 void THERMO_toggleLED(int addr);
 
-void THERMO_setTYPE(int addr, int channel, const char* tc_type);
-char* THERMO_getTYPE(int addr, int channel);
-double THERMO_getTEMP(int addr, int channel, char scale);
-double THERMO_getCOLD(int addr, char scale);
+double THERMO_getTEMP(int addr, int channel);
+double THERMO_getTEMP_scale(int addr, int channel, char scale);
+double THERMO_getCOLD(int addr);
+double THERMO_getCOLD_scale(int addr, char scale);
 
 #endif // BRIDGEPLATE_H

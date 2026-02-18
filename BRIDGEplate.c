@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <locale.h>
 #include "BRIDGEplate.h"
 
 #ifdef _WIN32
@@ -18,7 +19,7 @@
     #include <setupapi.h>
     #include <initguid.h>
     #include <devguid.h>
-    //#pragma comment(lib, "setupapi.lib")
+    #pragma comment(lib, "setupapi.lib")
     
     typedef HANDLE SerialPort;
     #define INVALID_PORT INVALID_HANDLE_VALUE
@@ -28,6 +29,7 @@
     #include <termios.h>
     #include <sys/ioctl.h>
     #include <dirent.h>
+    #include <limits.h>
     
     typedef int SerialPort;
     #define INVALID_PORT -1
@@ -36,10 +38,9 @@
 // Configuration
 #define TARGET_VID "2E8A"
 #define TARGET_PID "10E3"
-#define BAUD_RATE 115200
 #define TIMEOUT_MS 20000
 #define MAX_RESPONSE 4096
-#define MAX_CMD_LEN 2048
+#define MAX_CMD_LEN 256
 
 // Global serial port handle
 static SerialPort g_serial_port = INVALID_PORT;
@@ -104,7 +105,7 @@ char* find_port_by_vid_pid(const char* vid, const char* pid) {
     return NULL;
 }
 
-SerialPort open_serial_port(const char* port_name, int baud_rate) {
+SerialPort open_serial_port(const char* port_name) {
     char full_name[32];
     HANDLE handle;
     DCB dcb = {0};
@@ -129,8 +130,8 @@ SerialPort open_serial_port(const char* port_name, int baud_rate) {
         return INVALID_PORT;
     }
     
-    // Set basic parameters
-    dcb.BaudRate = baud_rate;
+    // Set basic parameters - fixed at 115200 baud
+    dcb.BaudRate = 115200;
     dcb.ByteSize = 8;
     dcb.Parity = NOPARITY;
     dcb.StopBits = ONESTOPBIT;
@@ -200,237 +201,137 @@ int read_serial(SerialPort port, char* buffer, int max_len) {
 
 #else  // Linux/POSIX
 
-// Find device by VID/PID on Linux
+// Read a single line from a sysfs attribute file, strip trailing newline.
+// Returns 1 on success, 0 if the file could not be opened or read.
+static int read_sysfs_attr(const char* path, char* buf, size_t buflen) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    if (!fgets(buf, (int)buflen, fp)) { fclose(fp); return 0; }
+    buf[strcspn(buf, "\n")] = '\0';
+    fclose(fp);
+    return 1;
+}
+
+// Find device by VID/PID on Linux.
+//
+// Sysfs layout varies by kernel and driver.  The entry
+//   /sys/class/tty/ttyACM0/device
+// is a symlink whose target depth relative to the USB device node differs
+// across systems.  The idVendor/idProduct files live in the USB device node.
+// Rather than guessing the depth with hardcoded "../..", we resolve the
+// symlink with realpath() and walk up until we find idVendor (or leave /sys).
 char* find_port_by_vid_pid(const char* vid, const char* pid) {
-    static char port_name[256];
+    static char port_name[512];
     DIR *dir;
     struct dirent *entry;
-    char path[512];
+    char device_link[512];
+    char resolved[PATH_MAX];
+    char candidate[PATH_MAX];
     char vid_buf[16], pid_buf[16];
-    char link_target[256];
-    ssize_t len;
-    FILE *fp;
-    
-    // Method 1: Check /dev/serial/by-id/ (most reliable for USB devices)
-    dir = opendir("/dev/serial/by-id");
-    if (dir) {
-        while ((entry = readdir(dir)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
-            
-            snprintf(path, sizeof(path), "/dev/serial/by-id/%s", entry->d_name);
-            
-            // Read the symlink to get the actual device
-            len = readlink(path, link_target, sizeof(link_target) - 1);
-            if (len > 0) {
-                link_target[len] = '\0';
-                
-                // Get the real path
-                char real_path[512];
-                if (realpath(path, real_path)) {
-                    // Get tty device name
-                    char *dev_name = strrchr(real_path, '/');
-                    if (dev_name) {
-                        dev_name++; // Skip the '/'
-                        
-                        // Try multiple paths to find VID/PID
-                        char sysfs_path[512];
-                        int found_vid = 0, found_pid = 0;
-                        
-                        // Try device/../idVendor (direct USB device)
-                        snprintf(sysfs_path, sizeof(sysfs_path),
-                                "/sys/class/tty/%s/device/../idVendor", dev_name);
-                        fp = fopen(sysfs_path, "r");
-                        if (!fp) {
-                            // Try device/../../idVendor (through USB interface)
-                            snprintf(sysfs_path, sizeof(sysfs_path),
-                                    "/sys/class/tty/%s/device/../../idVendor", dev_name);
-                            fp = fopen(sysfs_path, "r");
-                        }
-                        if (!fp) {
-                            // Try device/../../../idVendor (through interface and configuration)
-                            snprintf(sysfs_path, sizeof(sysfs_path),
-                                    "/sys/class/tty/%s/device/../../../idVendor", dev_name);
-                            fp = fopen(sysfs_path, "r");
-                        }
-                        
-                        if (fp) {
-                            if (fgets(vid_buf, sizeof(vid_buf), fp)) {
-                                vid_buf[strcspn(vid_buf, "\n")] = 0;
-                                found_vid = 1;
-                            }
-                            fclose(fp);
-                        }
-                        
-                        if (found_vid) {
-                            // Try matching PID paths
-                            snprintf(sysfs_path, sizeof(sysfs_path),
-                                    "/sys/class/tty/%s/device/../idProduct", dev_name);
-                            fp = fopen(sysfs_path, "r");
-                            if (!fp) {
-                                snprintf(sysfs_path, sizeof(sysfs_path),
-                                        "/sys/class/tty/%s/device/../../idProduct", dev_name);
-                                fp = fopen(sysfs_path, "r");
-                            }
-                            if (!fp) {
-                                snprintf(sysfs_path, sizeof(sysfs_path),
-                                        "/sys/class/tty/%s/device/../../../idProduct", dev_name);
-                                fp = fopen(sysfs_path, "r");
-                            }
-                            
-                            if (fp) {
-                                if (fgets(pid_buf, sizeof(pid_buf), fp)) {
-                                    pid_buf[strcspn(pid_buf, "\n")] = 0;
-                                    found_pid = 1;
-                                }
-                                fclose(fp);
-                            }
-                        }
-                        
-                        if (found_vid && found_pid) {
-                            if (strcasecmp(vid_buf, vid) == 0 && 
-                                strcasecmp(pid_buf, pid) == 0) {
-                                closedir(dir);
-                                strncpy(port_name, real_path, sizeof(port_name) - 1);
-                                port_name[sizeof(port_name) - 1] = '\0';
-                                return port_name;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        closedir(dir);
-    }
-    
-    // Method 2: Scan /sys/class/tty (fallback)
+    char vid_path[PATH_MAX + 16], pid_path[PATH_MAX + 16];
+    char* slash;
+
     dir = opendir("/sys/class/tty");
-    if (!dir) {
-        return NULL;
-    }
-    
+    if (!dir) return NULL;
+
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
-        
-        // Try multiple paths to find VID
-        int found_vid = 0, found_pid = 0;
-        
-        snprintf(path, sizeof(path), 
-                "/sys/class/tty/%s/device/../idVendor", entry->d_name);
-        fp = fopen(path, "r");
-        if (!fp) {
-            snprintf(path, sizeof(path), 
-                    "/sys/class/tty/%s/device/../../idVendor", entry->d_name);
-            fp = fopen(path, "r");
-        }
-        if (!fp) {
-            snprintf(path, sizeof(path), 
-                    "/sys/class/tty/%s/device/../../../idVendor", entry->d_name);
-            fp = fopen(path, "r");
-        }
-        if (!fp) continue;
-        
-        if (fgets(vid_buf, sizeof(vid_buf), fp)) {
-            vid_buf[strcspn(vid_buf, "\n")] = 0;
-            found_vid = 1;
-        }
-        fclose(fp);
-        
-        if (!found_vid) continue;
-        
-        // Try matching PID paths
-        snprintf(path, sizeof(path),
-                "/sys/class/tty/%s/device/../idProduct", entry->d_name);
-        fp = fopen(path, "r");
-        if (!fp) {
-            snprintf(path, sizeof(path),
-                    "/sys/class/tty/%s/device/../../idProduct", entry->d_name);
-            fp = fopen(path, "r");
-        }
-        if (!fp) {
-            snprintf(path, sizeof(path),
-                    "/sys/class/tty/%s/device/../../../idProduct", entry->d_name);
-            fp = fopen(path, "r");
-        }
-        if (!fp) continue;
-        
-        if (fgets(pid_buf, sizeof(pid_buf), fp)) {
-            pid_buf[strcspn(pid_buf, "\n")] = 0;
-            found_pid = 1;
-        }
-        fclose(fp);
-        
-        if (found_vid && found_pid) {
-            if (strcasecmp(vid_buf, vid) == 0 && 
-                strcasecmp(pid_buf, pid) == 0) {
+
+        snprintf(device_link, sizeof(device_link),
+                 "/sys/class/tty/%s/device", entry->d_name);
+
+        if (!realpath(device_link, resolved)) continue;
+
+        // Walk up from the resolved path looking for idVendor
+        strncpy(candidate, resolved, PATH_MAX - 1);
+        candidate[PATH_MAX - 1] = '\0';
+
+        while (strncmp(candidate, "/sys", 4) == 0) {
+            snprintf(vid_path, sizeof(vid_path), "%s/idVendor", candidate);
+            if (!read_sysfs_attr(vid_path, vid_buf, sizeof(vid_buf))) {
+                // No idVendor at this level — move up
+                slash = strrchr(candidate, '/');
+                if (!slash || slash == candidate) break;
+                *slash = '\0';
+                continue;
+            }
+
+            // Found idVendor; check it
+            if (strcasecmp(vid_buf, vid) != 0) break;  // wrong VID, stop
+
+            snprintf(pid_path, sizeof(pid_path), "%s/idProduct", candidate);
+            if (!read_sysfs_attr(pid_path, pid_buf, sizeof(pid_buf))) break;
+
+            if (strcasecmp(pid_buf, pid) == 0) {
                 snprintf(port_name, sizeof(port_name), "/dev/%s", entry->d_name);
                 closedir(dir);
                 return port_name;
             }
+            break;  // VID matched but PID didn't, stop climbing
         }
     }
-    
+
     closedir(dir);
     return NULL;
 }
 
-SerialPort open_serial_port(const char* port_name, int baud_rate) {
+SerialPort open_serial_port(const char* port_name) {
     int fd;
     struct termios tty;
     
-    fd = open(port_name, O_RDWR | O_NOCTTY | O_NDELAY);
+    fd = open(port_name, O_RDWR | O_NOCTTY);
     if (fd < 0) {
         return INVALID_PORT;
     }
     
-    // Make the file descriptor blocking
-    fcntl(fd, F_SETFL, 0);
+    // Flush any stale data left over from a previous session or reset banner
+    tcflush(fd, TCIOFLUSH);
     
     if (tcgetattr(fd, &tty) != 0) {
         close(fd);
         return INVALID_PORT;
     }
     
-    // Set baud rate
-    speed_t speed = B115200;  // Default to 115200
-    cfsetospeed(&tty, speed);
-    cfsetispeed(&tty, speed);
+    // Set baud rate to 115200
+    cfsetospeed(&tty, B115200);
+    cfsetispeed(&tty, B115200);
     
-    // 8N1 mode, no flow control
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;     // 8-bit chars
-    tty.c_cflag |= (CLOCAL | CREAD);                // Ignore modem controls, enable reading
-    tty.c_cflag &= ~(PARENB | PARODD);              // No parity
-    tty.c_cflag &= ~CSTOPB;                         // 1 stop bit
-    tty.c_cflag &= ~CRTSCTS;                        // No hardware flow control
+    // 8N1 mode
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+    tty.c_cflag |= (CLOCAL | CREAD);
+    tty.c_cflag &= ~(PARENB | PARODD);
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CRTSCTS;
     
-    // Input flags - disable input processing
-    tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL);
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);         // No software flow control
+    tty.c_iflag &= ~IGNBRK;
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
     
-    // Output flags - disable output processing (raw output)
-    tty.c_oflag = 0;
-    tty.c_oflag &= ~OPOST;                          // No output processing
-    
-    // Local flags - disable canonical mode, echo, etc. (raw input)
     tty.c_lflag = 0;
-    tty.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    tty.c_oflag = 0;
     
-    // Control characters
-    tty.c_cc[VMIN]  = 0;      // Non-blocking read
-    tty.c_cc[VTIME] = 200;    // 20 second timeout (in deciseconds)
-    
-    // Flush port and apply settings
-    tcflush(fd, TCIFLUSH);
+    tty.c_cc[VMIN]  = 0;
+    tty.c_cc[VTIME] = 20;   // 2 second initial timeout (units of 0.1 s)
     
     if (tcsetattr(fd, TCSANOW, &tty) != 0) {
         close(fd);
         return INVALID_PORT;
     }
     
-    // Flush again after setting attributes
-    tcflush(fd, TCIOFLUSH);
+    // Assert DTR and RTS.  The RP2040 USB CDC firmware watches DTR to detect
+    // a connected host; without it the firmware may never enter its command
+    // loop.  This matches the DTR_CONTROL_ENABLE / RTS_CONTROL_ENABLE that
+    // the Windows path sets in the DCB.
+    ioctl(fd, TIOCMBIS, &(int){TIOCM_DTR});
+    ioctl(fd, TIOCMBIS, &(int){TIOCM_RTS});
     
-    // Small delay to let the port stabilize
-    usleep(100000);  // 100ms
+    // Give the device time to finish booting.  open() on a USB CDC port
+    // toggles DTR, which can reset the RP2040.  The firmware needs a moment
+    // to come back up before we send commands.
+    usleep(100000);   // 100 ms
+    
+    // Flush again — the device may have printed a reset/startup banner
+    // during that 100 ms window.
+    tcflush(fd, TCIOFLUSH);
     
     return fd;
 }
@@ -449,19 +350,40 @@ int read_serial(SerialPort port, char* buffer, int max_len) {
     return read(port, buffer, max_len);
 }
 
+// Reprogram the termios VTIME on an already-open fd.
+// timeout_tenths is in units of 0.1 s (e.g. 1 = 100 ms, 20 = 2 s).
+static void set_read_timeout(int fd, int timeout_tenths) {
+    struct termios tty;
+    if (tcgetattr(fd, &tty) == 0) {
+        tty.c_cc[VTIME] = (cc_t)timeout_tenths;
+        tcsetattr(fd, TCSANOW, &tty);
+    }
+}
+
 #endif
 
 // ============================================================================
 // Core communication functions
 // ============================================================================
 
-// Send command and receive response
+// Send command and receive response.
+// Timeout strategy (Linux):
+//   - Port opens with VTIME = 20  (2 s).  This is the "waiting for first
+//     byte" timeout.  The device may take up to ~1 s to process a command.
+//   - As soon as we receive the first byte we reprogram VTIME = 1  (100 ms).
+//     This is the inter-byte timeout.  Once the response stops flowing we
+//     exit the loop within 100 ms instead of waiting 2 s again.
+//   - Before returning we restore VTIME = 20 so the next CMD call gets the
+//     full initial wait.
+// On Windows ReadTotalTimeoutConstant already covers both phases; the
+// set_read_timeout calls below are guarded to Linux only.
 char* CMD(const char* cmd) {
     static char response[MAX_RESPONSE];
     char cmd_buf[MAX_CMD_LEN];
     int len, total_read = 0;
     int bytes_read;
     char c;
+    int got_first_byte = 0;
     
     if (g_serial_port == INVALID_PORT) {
         response[0] = '\0';
@@ -478,18 +400,62 @@ char* CMD(const char* cmd) {
         return response;
     }
     
-    // Read response until newline
+    // The RP2040 USB CDC firmware echoes every command line back before
+    // sending the actual response.  Discard that echo first.
+    // Echo line ends with \n, same as the response line.
+    while (1) {
+        bytes_read = read_serial(g_serial_port, &c, 1);
+        if (bytes_read <= 0) {
+            // Timeout waiting for echo — device not responding at all.
+            // Restore timeout and bail.
+#ifndef _WIN32
+            set_read_timeout(g_serial_port, 20);
+#endif
+            response[0] = '\0';
+            return response;
+        }
+        if (!got_first_byte) {
+            got_first_byte = 1;
+#ifndef _WIN32
+            set_read_timeout(g_serial_port, 1);   // 100 ms inter-byte
+#endif
+        }
+        if (c == '\n') break;            // end of echo line
+    }
+
+    // Echo consumed.  Reset timeout for the response line: the device may
+    // need up to ~1 s to process the command and start sending back data.
+#ifndef _WIN32
+    set_read_timeout(g_serial_port, 20);  // 2 s wait for first response byte
+#endif
+    got_first_byte = 0;
+
+    // Read actual response until newline or timeout
     while (total_read < MAX_RESPONSE - 1) {
         bytes_read = read_serial(g_serial_port, &c, 1);
-        if (bytes_read <= 0) break;
+        if (bytes_read <= 0) break;      // timeout or error — done
         
-        if (c == '\n') break;
-        if (c != '\r') {  // Skip CR
+        // First byte of response received — tighten to inter-byte timeout
+        if (!got_first_byte) {
+            got_first_byte = 1;
+#ifndef _WIN32
+            set_read_timeout(g_serial_port, 1);   // 100 ms inter-byte
+#endif
+        }
+        
+        if (c == '\n') break;            // end of response
+        if (c != '\r') {                 // skip CR
             response[total_read++] = c;
         }
     }
     
     response[total_read] = '\0';
+
+    // Restore the longer initial-wait timeout for the next call
+#ifndef _WIN32
+    set_read_timeout(g_serial_port, 20);  // 2 s
+#endif
+    
     return response;
 }
 
@@ -532,8 +498,19 @@ double convert_to_number(const char* str) {
     char *endptr;
     double value;
     
+    // Force C locale for strtod to ensure '.' is always the decimal separator.
+    // Without this, on Windows/Linux systems with non-US locales (German, French,
+    // etc. which use ',' as decimal separator), strtod("2.483") would stop at
+    // the '.' and fail to parse the full number.
+    char *old_locale = setlocale(LC_NUMERIC, NULL);
+    setlocale(LC_NUMERIC, "C");
+    
     // Try to convert to number
     value = strtod(str, &endptr);
+    
+    // Restore original locale
+    setlocale(LC_NUMERIC, old_locale);
+    
     if (endptr != str && *endptr == '\0') {
         return value;
     }
@@ -545,8 +522,8 @@ double convert_to_number(const char* str) {
 // Parse command with arguments and return numeric response
 double parseIt(const char* class_method, int argc, ...) {
     char cmd[MAX_CMD_LEN];
-    char args[MAX_CMD_LEN - 256] = "";  // Leave room for class_method and formatting
-    char temp[64];
+    char args[32] = "";
+    char temp[16];
     va_list ap;
     int i;
     char* response;
@@ -556,9 +533,7 @@ double parseIt(const char* class_method, int argc, ...) {
     for (i = 0; i < argc; i++) {
         int arg = va_arg(ap, int);
         snprintf(temp, sizeof(temp), "%s%d", (i > 0 ? ", " : ""), arg);
-        if (strlen(args) + strlen(temp) < sizeof(args) - 1) {
-            strcat(args, temp);
-        }
+        strncat(args, temp, sizeof(args) - strlen(args) - 1);
     }
     va_end(ap);
     
@@ -574,8 +549,8 @@ double parseIt(const char* class_method, int argc, ...) {
 // Parse command and return string response
 char* parseItStr(const char* class_method, int argc, ...) {
     char cmd[MAX_CMD_LEN];
-    char args[MAX_CMD_LEN - 256] = "";  // Leave room for class_method and formatting
-    char temp[64];
+    char args[32] = "";
+    char temp[16];
     va_list ap;
     int i;
     
@@ -584,9 +559,7 @@ char* parseItStr(const char* class_method, int argc, ...) {
     for (i = 0; i < argc; i++) {
         int arg = va_arg(ap, int);
         snprintf(temp, sizeof(temp), "%s%d", (i > 0 ? ", " : ""), arg);
-        if (strlen(args) + strlen(temp) < sizeof(args) - 1) {
-            strcat(args, temp);
-        }
+        strncat(args, temp, sizeof(args) - strlen(args) - 1);
     }
     va_end(ap);
     
@@ -597,54 +570,11 @@ char* parseItStr(const char* class_method, int argc, ...) {
     return CMD(cmd);
 }
 
-// Parse command with mixed string/numeric arguments and return numeric response
-double parseItMixed(const char* class_method, int argc, ...) {
-    char cmd[MAX_CMD_LEN];
-    char args[MAX_CMD_LEN - 256] = "";  // Leave room for class_method and formatting
-    char temp[128];
-    va_list ap;
-    int i;
-    char* response;
-    
-    // Build argument string
-    va_start(ap, argc);
-    for (i = 0; i < argc; i++) {
-        // Each argument is passed as a const char* pointer
-        const char* arg = va_arg(ap, const char*);
-        
-        // Check if argument looks like a number or string
-        char *endptr;
-        strtod(arg, &endptr);
-        
-        if (endptr != arg && *endptr == '\0') {
-            // It's a pure number - add without quotes
-            snprintf(temp, sizeof(temp), "%s%s", (i > 0 ? ", " : ""), arg);
-        } else {
-            // It's a string - add with quotes
-            snprintf(temp, sizeof(temp), "%s\"%s\"", (i > 0 ? ", " : ""), arg);
-        }
-        
-        // Only add if there's room
-        if (strlen(args) + strlen(temp) < sizeof(args) - 1) {
-            strcat(args, temp);
-        }
-    }
-    va_end(ap);
-    
-    // Build command string
-    snprintf(cmd, sizeof(cmd), "%s(%s)", class_method, args);
-    
-    // Send command and get response
-    response = CMD(cmd);
-    
-    return convert_to_number(response);
-}
-
 // Parse command and return array of doubles
 int parseItArray(const char* class_method, double* result, int max_results, int argc, ...) {
     char cmd[MAX_CMD_LEN];
-    char args[MAX_CMD_LEN - 256] = "";  // Leave room for class_method and formatting
-    char temp[64];
+    char args[32] = "";
+    char temp[16];
     va_list ap;
     int i;
     char* response;
@@ -656,9 +586,7 @@ int parseItArray(const char* class_method, double* result, int max_results, int 
     for (i = 0; i < argc; i++) {
         int arg = va_arg(ap, int);
         snprintf(temp, sizeof(temp), "%s%d", (i > 0 ? ", " : ""), arg);
-        if (strlen(args) + strlen(temp) < sizeof(args) - 1) {
-            strcat(args, temp);
-        }
+        strncat(args, temp, sizeof(args) - strlen(args) - 1);
     }
     va_end(ap);
     
@@ -701,7 +629,7 @@ void ADC_setLED(int addr) { parseIt("ADC.setLED", 1, addr); }
 void ADC_clrLED(int addr) { parseIt("ADC.clrLED", 1, addr); }
 void ADC_toggleLED(int addr) { parseIt("ADC.toggleLED", 1, addr); }
 double ADC_getADC(int addr, int channel) { return parseIt("ADC.getADC", 2, addr, channel); }
-void ADC_srTable(int addr) { dispBlock("ADC.srTable"); }
+void ADC_srTable(int addr) { parseIt("ADC.srTable", 1, addr); }
 void ADC_initADC(int addr) { parseIt("ADC.initADC", 1, addr); }
 void ADC_enableEVENTS(int addr) { parseIt("ADC.enableEVENTS", 1, addr); }
 void ADC_disableEVENTS(int addr) { parseIt("ADC.disableEVENTS", 1, addr); }
@@ -724,17 +652,16 @@ int ADC_getIall(int addr, double* results, int max_results) {
     return parseItArray("ADC.getIall", results, max_results, 1, addr);
 }
 
-void ADC_setMODE(int addr, const char* mode) { 
-    char addr_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    parseItMixed("ADC.setMODE", 2, addr_str, mode); 
-}
+void ADC_setMODE(int addr, int mode) { parseIt("ADC.setMODE", 2, addr, mode); }
 int ADC_getMODE(int addr) { return (int)parseIt("ADC.getMODE", 1, addr); }
-void ADC_configINPUT(int addr, int channel, const char* config) { 
-    char addr_str[16], channel_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    snprintf(channel_str, sizeof(channel_str), "%d", channel);
-    parseItMixed("ADC.configINPUT", 3, addr_str, channel_str, config); 
+// ADC_configINPUT without enable parameter (doesn't change enable status)
+void ADC_configINPUT(int addr, int channel, int sample_rate) { 
+    parseIt("ADC.configINPUT", 3, addr, channel, sample_rate); 
+}
+
+// ADC_configINPUT with enable parameter
+void ADC_configINPUT_enable(int addr, int channel, int sample_rate, int enable) { 
+    parseIt("ADC.configINPUT", 4, addr, channel, sample_rate, enable); 
 }
 void ADC_enableINPUT(int addr, int channel) { parseIt("ADC.enableINPUT", 2, addr, channel); }
 void ADC_disableINPUT(int addr, int channel) { parseIt("ADC.disableINPUT", 2, addr, channel); }
@@ -749,25 +676,115 @@ double ADC_readSINGLE_rate(int addr, int channel, int rate) {
     return parseIt("ADC.readSINGLE", 3, addr, channel, rate); 
 }
 
-void ADC_startSINGLE(int addr, int channel) { parseIt("ADC.startSINGLE", 2, addr, channel); }
+// ADC_startSINGLE with 2 parameters (rate defaults to device setting)
+void ADC_startSINGLE(int addr, int channel) { 
+    parseIt("ADC.startSINGLE", 2, addr, channel); 
+}
+
+// ADC_startSINGLE with 3 parameters (specify sample rate)
+void ADC_startSINGLE_rate(int addr, int channel, int rate) { 
+    parseIt("ADC.startSINGLE", 3, addr, channel, rate); 
+}
+
 double ADC_getSINGLE(int addr) { return parseIt("ADC.getSINGLE", 1, addr); }
 
+// ADC_readSCAN without rate parameter (uses default)
 int ADC_readSCAN(int addr, double* results, int max_results) {
     return parseItArray("ADC.readSCAN", results, max_results, 1, addr);
 }
 
-void ADC_startSCAN(int addr) { parseIt("ADC.startSCAN", 1, addr); }
+// ADC_readSCAN with rate parameter
+int ADC_readSCAN_rate(int addr, double* results, int max_results, int rate) {
+    char cmd[MAX_CMD_LEN];
+    char args[32];
+    snprintf(args, sizeof(args), "%d, %d", addr, rate);
+    snprintf(cmd, sizeof(cmd), "ADC.readSCAN(%s)", args);
+    
+    char* response = CMD(cmd);
+    int count = 0;
+    char* token;
+    
+    if (strchr(response, ',') == NULL) {
+        if (count < max_results) {
+            results[count++] = convert_to_number(response);
+        }
+        return count;
+    }
+    
+    token = strtok(response, ",");
+    while (token != NULL && count < max_results) {
+        while (isspace(*token)) token++;
+        results[count++] = convert_to_number(token);
+        token = strtok(NULL, ",");
+    }
+    return count;
+}
+
+// ADC_startSCAN without rate parameter (uses default)
+void ADC_startSCAN(int addr) { 
+    parseIt("ADC.startSCAN", 1, addr); 
+}
+
+// ADC_startSCAN with rate parameter
+void ADC_startSCAN_rate(int addr, int rate) { 
+    parseIt("ADC.startSCAN", 2, addr, rate); 
+}
 
 int ADC_getSCAN(int addr, double* results, int max_results) {
     return parseItArray("ADC.getSCAN", results, max_results, 1, addr);
 }
 
+// ADC_getBLOCK without rate parameter (uses default)
 int ADC_getBLOCK(int addr, double* results, int max_results) {
     return parseItArray("ADC.getBLOCK", results, max_results, 1, addr);
 }
 
-void ADC_startBLOCK(int addr) { parseIt("ADC.startBLOCK", 1, addr); }
-void ADC_startSTREAM(int addr) { parseIt("ADC.startSTREAM", 1, addr); }
+// ADC_getBLOCK with rate parameter
+int ADC_getBLOCK_rate(int addr, double* results, int max_results, int rate) {
+    char cmd[MAX_CMD_LEN];
+    char args[32];
+    snprintf(args, sizeof(args), "%d, %d", addr, rate);
+    snprintf(cmd, sizeof(cmd), "ADC.getBLOCK(%s)", args);
+    
+    char* response = CMD(cmd);
+    int count = 0;
+    char* token;
+    
+    if (strchr(response, ',') == NULL) {
+        if (count < max_results) {
+            results[count++] = convert_to_number(response);
+        }
+        return count;
+    }
+    
+    token = strtok(response, ",");
+    while (token != NULL && count < max_results) {
+        while (isspace(*token)) token++;
+        results[count++] = convert_to_number(token);
+        token = strtok(NULL, ",");
+    }
+    return count;
+}
+
+// ADC_startBLOCK without rate parameter (uses default)
+void ADC_startBLOCK(int addr) { 
+    parseIt("ADC.startBLOCK", 1, addr); 
+}
+
+// ADC_startBLOCK with rate parameter
+void ADC_startBLOCK_rate(int addr, int rate) { 
+    parseIt("ADC.startBLOCK", 2, addr, rate); 
+}
+
+// ADC_startSTREAM without rate parameter (uses default)
+void ADC_startSTREAM(int addr) { 
+    parseIt("ADC.startSTREAM", 1, addr); 
+}
+
+// ADC_startSTREAM with rate parameter
+void ADC_startSTREAM_rate(int addr, int rate) { 
+    parseIt("ADC.startSTREAM", 2, addr, rate); 
+}
 
 int ADC_getSTREAM(int addr, double* results, int max_results) {
     return parseItArray("ADC.getSTREAM", results, max_results, 1, addr);
@@ -778,11 +795,7 @@ int ADC_getDINbit(int addr, int bit) { return (int)parseIt("ADC.getDINbit", 2, a
 int ADC_getDINall(int addr) { return (int)parseIt("ADC.getDINall", 1, addr); }
 void ADC_enableDINevent(int addr, int bit) { parseIt("ADC.enableDINevent", 2, addr, bit); }
 void ADC_disableDINevent(int addr, int bit) { parseIt("ADC.disableDINevent", 2, addr, bit); }
-void ADC_configTRIG(int addr, const char* config) { 
-    char addr_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    parseItMixed("ADC.configTRIG", 2, addr_str, config); 
-}
+void ADC_configTRIG(int addr, int config) { parseIt("ADC.configTRIG", 2, addr, config); }
 void ADC_startTRIG(int addr) { parseIt("ADC.startTRIG", 1, addr); }
 void ADC_stopTRIG(int addr) { parseIt("ADC.stopTRIG", 1, addr); }
 void ADC_triggerFREQ(int addr, int freq) { parseIt("ADC.triggerFREQ", 2, addr, freq); }
@@ -799,15 +812,6 @@ double BRIDGE_getHWrev(void) { return parseIt("BRIDGE.getHWrev", 0); }
 double BRIDGE_getFWrev(void) { return parseIt("BRIDGE.getFWrev", 0); }
 void BRIDGE_resetSTACK(void) { parseIt("BRIDGE.resetSTACK", 0); }
 int BRIDGE_getSRQ(void) { return (int)parseIt("BRIDGE.getSRQ", 0); }
-void BRIDGE_setMODE(const char* mode) { 
-    parseItMixed("BRIDGE.setMODE", 1, mode); 
-}
-int BRIDGE_getDIN(int bit) { return (int)parseIt("BRIDGE.getDIN", 1, bit); }
-int BRIDGE_getDINall(void) { return (int)parseIt("BRIDGE.getDINall", 0); }
-void BRIDGE_setDOUT(int bit) { parseIt("BRIDGE.setDOUT", 1, bit); }
-void BRIDGE_clrDOUT(int bit) { parseIt("BRIDGE.clrDOUT", 1, bit); }
-void BRIDGE_toggleDOUT(int bit) { parseIt("BRIDGE.toggleDOUT", 1, bit); }
-void BRIDGE_setDOUTall(int value) { parseIt("BRIDGE.setDOUTall", 1, value); }
 void BRIDGE_resetBRIDGE(void) { parseIt("BRIDGE.resetBRIDGE", 0); }
 void BRIDGE_help(void) { dispBlock("BRIDGE.help"); }
 
@@ -838,18 +842,10 @@ int DAQC_getADDR(int addr) { return (int)parseIt("DAQC.getADDR", 1, addr); }
 char* DAQC_getID(int addr) { return parseItStr("DAQC.getID", 1, addr); }
 double DAQC_getHWrev(int addr) { return parseIt("DAQC.getHWrev", 1, addr); }
 double DAQC_getFWrev(int addr) { return parseIt("DAQC.getFWrev", 1, addr); }
-void DAQC_setLED(int addr, int led) { 
-    parseIt("DAQC.setLED", 2, addr, led); 
-}
-void DAQC_clrLED(int addr, int led) { 
-    parseIt("DAQC.clrLED", 2, addr, led); 
-}
-void DAQC_toggleLED(int addr, int led) { 
-    parseIt("DAQC.toggleLED", 2, addr, led); 
-}
-int DAQC_getLED(int addr, int led) { 
-    return (int)parseIt("DAQC.getLED", 2, addr, led); 
-}
+void DAQC_setLED(int addr, int led) { parseIt("DAQC.setLED", 2, addr, led); }
+void DAQC_clrLED(int addr, int led) { parseIt("DAQC.clrLED", 2, addr, led); }
+void DAQC_toggleLED(int addr, int led) { parseIt("DAQC.toggleLED", 2, addr, led); }
+int DAQC_getLED(int addr, int led) { return (int)parseIt("DAQC.getLED", 2, addr, led); }
 double DAQC_getADC(int addr, int channel) { return parseIt("DAQC.getADC", 2, addr, channel); }
 
 int DAQC_getADCall(int addr, double* results, int max_results) {
@@ -860,7 +856,17 @@ int DAQC_getDINbit(int addr, int bit) { return (int)parseIt("DAQC.getDINbit", 2,
 int DAQC_getDINall(int addr) { return (int)parseIt("DAQC.getDINall", 1, addr); }
 void DAQC_enableDINint(int addr, int bit) { parseIt("DAQC.enableDINint", 2, addr, bit); }
 void DAQC_disableDINint(int addr, int bit) { parseIt("DAQC.disableDINint", 2, addr, bit); }
-double DAQC_getTEMP(int addr, char scale) { return parseIt("DAQC.getTEMP", 2, addr, (int)scale); }
+
+// DAQC_getTEMP with default scale (Celsius)
+double DAQC_getTEMP(int addr) { 
+    return parseIt("DAQC.getTEMP", 2, addr, (int)'c'); 
+}
+
+// DAQC_getTEMP with specified scale
+double DAQC_getTEMP_scale(int addr, char scale) { 
+    return parseIt("DAQC.getTEMP", 2, addr, (int)scale); 
+}
+
 void DAQC_setDOUTbit(int addr, int bit) { parseIt("DAQC.setDOUTbit", 2, addr, bit); }
 void DAQC_clrDOUTbit(int addr, int bit) { parseIt("DAQC.clrDOUTbit", 2, addr, bit); }
 void DAQC_setDOUTall(int addr, int value) { parseIt("DAQC.setDOUTall", 2, addr, value); }
@@ -925,11 +931,7 @@ void DAQC2_setDAC(int addr, int channel, double value) {
 double DAQC2_getDAC(int addr, int channel) { return parseIt("DAQC2.getDAC", 2, addr, channel); }
 
 // LED Functions
-void DAQC2_setLED(int addr, const char* led) { 
-    char addr_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    parseItMixed("DAQC2.setLED", 2, addr_str, led); 
-}
+void DAQC2_setLED(int addr, int led) { parseIt("DAQC2.setLED", 2, addr, led); }
 int DAQC2_getLED(int addr) { return (int)parseIt("DAQC2.getLED", 1, addr); }
 
 // Frequency Functions
@@ -948,11 +950,7 @@ void DAQC2_fgFREQ(int addr, double freq) {
     snprintf(cmd, sizeof(cmd), "DAQC2.fgFREQ(%d, %.2f)", addr, freq);
     CMD(cmd);
 }
-void DAQC2_fgTYPE(int addr, const char* type) { 
-    char addr_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    parseItMixed("DAQC2.fgTYPE", 2, addr_str, type); 
-}
+void DAQC2_fgTYPE(int addr, int type) { parseIt("DAQC2.fgTYPE", 2, addr, type); }
 void DAQC2_fgLEVEL(int addr, double level) {
     char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd), "DAQC2.fgLEVEL(%d, %.2f)", addr, level);
@@ -969,12 +967,7 @@ void DAQC2_motorDISABLE(int addr, int motor) { parseIt("DAQC2.motorDISABLE", 2, 
 void DAQC2_motorMOVE(int addr, int motor, int steps) { parseIt("DAQC2.motorMOVE", 3, addr, motor, steps); }
 void DAQC2_motorJOG(int addr, int motor) { parseIt("DAQC2.motorJOG", 2, addr, motor); }
 void DAQC2_motorSTOP(int addr, int motor) { parseIt("DAQC2.motorSTOP", 2, addr, motor); }
-void DAQC2_motorDIR(int addr, int motor, const char* dir) { 
-    char addr_str[16], motor_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    snprintf(motor_str, sizeof(motor_str), "%d", motor);
-    parseItMixed("DAQC2.motorDIR", 3, addr_str, motor_str, dir); 
-}
+void DAQC2_motorDIR(int addr, int motor, int dir) { parseIt("DAQC2.motorDIR", 3, addr, motor, dir); }
 void DAQC2_motorRATE(int addr, int motor, int rate) { parseIt("DAQC2.motorRATE", 3, addr, motor, rate); }
 void DAQC2_motorOFF(int addr, int motor) { parseIt("DAQC2.motorOFF", 2, addr, motor); }
 void DAQC2_motorINTenable(int addr, int motor) { parseIt("DAQC2.motorINTenable", 2, addr, motor); }
@@ -1055,21 +1048,25 @@ void THERMO_setLED(int addr) { parseIt("THERMO.setLED", 1, addr); }
 void THERMO_clrLED(int addr) { parseIt("THERMO.clrLED", 1, addr); }
 void THERMO_toggleLED(int addr) { parseIt("THERMO.toggleLED", 1, addr); }
 
-void THERMO_setTYPE(int addr, int channel, const char* tc_type) {
-    char addr_str[16], channel_str[16];
-    snprintf(addr_str, sizeof(addr_str), "%d", addr);
-    snprintf(channel_str, sizeof(channel_str), "%d", channel);
-    parseItMixed("THERMO.setTYPE", 3, addr_str, channel_str, tc_type);
+// THERMO_getTEMP with default scale (Celsius)
+double THERMO_getTEMP(int addr, int channel) { 
+    return parseIt("THERMO.getTEMP", 3, addr, channel, (int)'c'); 
 }
 
-char* THERMO_getTYPE(int addr, int channel) {
-    return parseItStr("THERMO.getTYPE", 2, addr, channel);
-}
-
-double THERMO_getTEMP(int addr, int channel, char scale) { 
+// THERMO_getTEMP with specified scale
+double THERMO_getTEMP_scale(int addr, int channel, char scale) { 
     return parseIt("THERMO.getTEMP", 3, addr, channel, (int)scale); 
 }
-double THERMO_getCOLD(int addr, char scale) { return parseIt("THERMO.getCOLD", 2, addr, (int)scale); }
+
+// THERMO_getCOLD with default scale (Celsius)
+double THERMO_getCOLD(int addr) { 
+    return parseIt("THERMO.getCOLD", 2, addr, (int)'c'); 
+}
+
+// THERMO_getCOLD with specified scale
+double THERMO_getCOLD_scale(int addr, char scale) { 
+    return parseIt("THERMO.getCOLD", 2, addr, (int)scale); 
+}
 
 // ============================================================================
 // POLL Function - Enumerate all connected plates
@@ -1183,10 +1180,10 @@ int BRIDGEplate_init(void) {
         return -1;
     }
     
-    //printf("BRIDGEplate found on %s\n", port_name);
+    // printf("BRIDGEplate found on %s\n", port_name);
     
     // Open the serial port
-    g_serial_port = open_serial_port(port_name, BAUD_RATE);
+    g_serial_port = open_serial_port(port_name);
     if (g_serial_port == INVALID_PORT) {
         fprintf(stderr, "Failed to open port %s\n", port_name);
         return -1;
