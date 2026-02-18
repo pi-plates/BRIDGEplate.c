@@ -33,9 +33,6 @@ The BRIDGEplate C Library provides a complete interface to control Pi-Plates har
 
 - **Cross-platform**: Works on Windows and Linux
 - **Automatic device detection**: Finds BRIDGEplate by VID/PID (2E8A:10E3)
-- **Multiple plate support**: Control up to 8 plates per stack (addresses 0-7)
-- **115200 baud serial communication**
-- **8N1 serial format** (8 data bits, no parity, 1 stop bit)
 
 ### Hardware Connection
 
