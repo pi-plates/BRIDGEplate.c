@@ -1543,7 +1543,7 @@ int main(void) {
     }
     
     // Check if ADC plate is present at address 0
-    if (ADC_getADDR(0) != 0) {
+    if (ADC_getADDR(0) == 0) {
         printf("ADC plate found at address 0\n");
         printf("ADC ID: %s\n", ADC_getID(0));
         
@@ -1584,7 +1584,7 @@ int main(void) {
     }
     
     // Check for RELAY plate
-    if (RELAY_getADDR(0) != 0) {
+    if (RELAY_getADDR(0) == 0) {
         printf("RELAY plate found at address 0\n");
         
         // Turn on LED
@@ -1635,7 +1635,7 @@ int main(void) {
         return 1;
     }
     
-    if (DAQC_getADDR(0) != 0) {
+    if (DAQC_getADDR(0) == 0) {
         printf("DAQC plate found at address 0\n");
         
         // Set LEDs
@@ -1693,7 +1693,7 @@ int main(void) {
         return 1;
     }
     
-    if (CURRENT_getADDR(0) != 0) {
+    if (CURRENT_getADDR(0) == 0) {
         printf("CURRENT plate found at address 0\n");
         printf("Monitoring 4-20mA inputs...\n\n");
         
@@ -1738,7 +1738,7 @@ int main(void) {
         return 1;
     }
     
-    if (DAQC2_getADDR(0) != 0) {
+    if (DAQC2_getADDR(0) == 0) {
         printf("DAQC2 plate found at address 0\n");
         
         // Set LED to green
@@ -1797,7 +1797,7 @@ int main(void) {
         return 1;
     }
     
-    if (THERMO_getADDR(0) != 0) {
+    if (THERMO_getADDR(0) == 0) {
         printf("THERMO plate found at address 0\n");
         
         // Configure thermocouple types
